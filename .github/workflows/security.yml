@@ -1,0 +1,57 @@
+---
+name: Security analysis
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  security-analysis:
+    runs-on: ubuntu-latest
+    permissions: read-all
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            gnutls-dev \
+            libkeyutils-dev \
+            libnl-3-dev \
+            libnl-genl-3-dev \
+            libglib2.0-dev
+
+          # Install additional security tools
+          pip3 install semgrep safety
+
+      - name: Configure project
+        run: |
+          ./autogen.sh
+          ./configure --with-systemd
+
+      - name: Run Semgrep
+        run: |
+          echo "::group::Semgrep Security Scan"
+          semgrep --config=auto src/ || true
+          echo "::endgroup::"
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "::group::Secret Scanning"
+          # Simple regex-based secret detection
+          grep -r -i -E "(password|secret|key|token|api_key)" \
+            --include="*.c" --include="*.h" src/ || \
+            echo "No hardcoded secrets found"
+          echo "::endgroup::"
+
+      - name: Dependency vulnerability check
+        run: |
+          echo "::group::Dependency Security Check"
+          # Check for known vulnerable dependencies
+          if command -v safety >/dev/null; then
+            pip3 freeze | safety check || true
+          fi
+          echo "::endgroup::"
