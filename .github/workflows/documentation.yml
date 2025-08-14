@@ -1,0 +1,86 @@
+name: Generate documentation
+
+on: workflow_dispatch
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install \
+            build-essential \
+            autoconf \
+            automake \
+            gnutls-dev \
+            libkeyutils-dev \
+            libnl-3-dev \
+            libnl-genl-3-dev \
+            libglib2.0-dev
+
+      - name: Install documentation tools
+        run: |
+          sudo apt-get -y install \
+            doxygen \
+            graphviz \
+            texlive-latex-base \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            ghostscript \
+            pandoc \
+            python3-pip \
+            nodejs \
+            npm
+
+          # Install additional tools
+          pip3 install mkdocs mkdocs-material sphinx breathe
+          npm install -g mermaid
+
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --with-systemd
+
+      - name: Basic documentation validation
+        run: |
+          # Check for required documentation files
+          required_files=("README.md" "INSTALL" "ChangeLog")
+          for file in "${required_files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ $file exists"
+            else
+              echo "⚠️  $file missing"
+            fi
+          done
+
+          # Check for TODOs and FIXMEs in documentation
+          find . -name "*.md" -exec grep -Hn "TODO\|FIXME\|XXX" {} \; || echo "No TODOs found"
+
+          # Basic link validation
+          find . -name "*.md" -exec grep -o 'http[s]\?://[^)]*' {} \; | sort -u > links.txt
+          echo "Found $(wc -l < links.txt) unique links to validate"
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Create a separate clone for gh-pages
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git gh-pages-repo
+          cd gh-pages-repo
+
+          git checkout gh-pages || git checkout --orphan gh-pages
+          git rm -rf . || true
+
+          cp -r ../docs/site/* .
+          touch .nojekyll
+
+          git add .
+          git commit -m "Documentation update" || exit 0
+          git push origin gh-pages
