@@ -1,0 +1,277 @@
+---
+name: Generate Release
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.2.3)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          /var/cache/apt
+          ~/.cache
+        key: ${{ runner.os }}-release-${{ hashFiles('configure.ac', 'Makefile.am') }}
+        restore-keys: |
+          ${{ runner.os }}-release-
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config \
+          gnutls-dev \
+          libkeyutils-dev \
+          libnl-3-dev \
+          libnl-genl-3-dev \
+          libglib2.0-dev
+
+    - name: Extract version information
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.tag }}"
+          IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
+        else
+          VERSION=${GITHUB_REF#refs/tags/}
+          # Determine if prerelease based on tag pattern
+          if [[ $VERSION =~ (alpha|beta|rc|pre) ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+        fi
+
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION_NUMBER=${VERSION#v}" >> $GITHUB_ENV
+        echo "IS_PRERELEASE=$IS_PRERELEASE" >> $GITHUB_ENV
+
+        echo "Release version: $VERSION"
+        echo "Is prerelease: $IS_PRERELEASE"
+
+    - name: Configure and build distribution tarball
+      run: |
+        echo "::group::Building Distribution Tarball"
+
+        # Configure the project
+        ./autogen.sh
+        ./configure --with-systemd
+
+        # Create distribution tarball
+        make dist
+
+        # List generated files
+        echo "Generated distribution files:"
+        ls -la *.tar.gz *.tar.xz *.tar.bz2 2>/dev/null || ls -la *.tar.*
+
+        # Create checksums
+        for file in *.tar.*; do
+          if [ -f "$file" ]; then
+            sha256sum "$file" > "${file}.sha256"
+            echo "Created checksum for $file"
+          fi
+        done
+
+        echo "::endgroup::"
+
+    - name: Extract release notes from NEWS
+      run: |
+        echo "::group::Extracting Release Notes"
+
+        if [ -f NEWS ]; then
+          echo "Found NEWS file, extracting release notes for $VERSION_NUMBER..."
+
+          # Extract release notes for this version from NEWS file
+          # This handles common NEWS file formats
+          if grep -q "^$VERSION_NUMBER\|^Version $VERSION_NUMBER\|^v$VERSION_NUMBER\|^$VERSION\b" NEWS; then
+            # Extract from version header to next version header or end of file
+            awk "
+              /^$VERSION_NUMBER\b|^Version $VERSION_NUMBER\b|^v$VERSION_NUMBER\b|^$VERSION\b/ { found=1; next }
+              found && /^[0-9]+\.[0-9]+|^Version [0-9]+\.[0-9]+|^v[0-9]+\.[0-9]+/ { exit }
+              found { print }
+            " NEWS > release_notes.txt
+
+            # Clean up empty lines at the beginning and end
+            sed -i '/./,$!d' release_notes.txt  # Remove leading empty lines
+            sed -i '${/^$/d}' release_notes.txt  # Remove trailing empty line
+
+            if [ -s release_notes.txt ]; then
+              echo "✓ Extracted release notes for $VERSION_NUMBER"
+              echo "Preview:"
+              head -10 release_notes.txt
+            else
+              echo "⚠️  No content found for version $VERSION_NUMBER in NEWS"
+              echo "Creating generic release notes..."
+              echo "Release $VERSION" > release_notes.txt
+              echo "" >> release_notes.txt
+              echo "See the NEWS file for detailed changes." >> release_notes.txt
+            fi
+          else
+            echo "⚠️  Version $VERSION_NUMBER not found in NEWS file"
+            echo "Available entries:"
+            grep -E "^[0-9]+\.[0-9]+|^Version [0-9]+|^v[0-9]+" NEWS | head -5
+
+            # Fallback to generic notes
+            echo "Release $VERSION" > release_notes.txt
+            echo "" >> release_notes.txt
+            echo "See the NEWS file for detailed changes." >> release_notes.txt
+          fi
+        else
+          echo "⚠️  No NEWS file found, creating basic release notes"
+          echo "Release $VERSION" > release_notes.txt
+          echo "" >> release_notes.txt
+          echo "Source code release of ktls-utils $VERSION" >> release_notes.txt
+        fi
+
+        echo "Final release notes:"
+        cat release_notes.txt
+
+        echo "::endgroup::"
+
+    - name: Create GitHub release
+      run: |
+        echo "::group::Creating GitHub Release"
+
+        # Prepare release notes for JSON
+        RELEASE_BODY=$(jq -Rs . < release_notes.txt)
+
+        # Create release using GitHub API
+        RELEASE_DATA=$(cat <<EOF
+        {
+          "tag_name": "$VERSION",
+          "target_commitish": "${{ github.sha }}",
+          "name": "$VERSION",
+          "body": $RELEASE_BODY,
+          "draft": false,
+          "prerelease": $IS_PRERELEASE,
+          "generate_release_notes": false
+        }
+        EOF
+        )
+
+        echo "Creating release..."
+        RELEASE_RESPONSE=$(curl -s -X POST \
+          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -H "Content-Type: application/json" \
+          -d "$RELEASE_DATA" \
+          "https://api.github.com/repos/${{ github.repository }}/releases")
+
+        # Extract upload URL
+        UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
+        RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+
+        if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
+          echo "Failed to create release:"
+          echo "$RELEASE_RESPONSE" | jq .
+          exit 1
+        fi
+
+        echo "✓ Created release with ID: $RELEASE_ID"
+        echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
+
+        echo "::endgroup::"
+
+    - name: Upload release assets
+      run: |
+        echo "::group::Uploading Release Assets"
+
+        # Upload all distribution files and checksums
+        for file in *.tar.* *.sha256; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file..."
+
+            # Determine content type
+            case "$file" in
+              *.tar.gz) CONTENT_TYPE="application/gzip" ;;
+              *.tar.xz) CONTENT_TYPE="application/x-xz" ;;
+              *.tar.bz2) CONTENT_TYPE="application/x-bzip2" ;;
+              *.sha256) CONTENT_TYPE="text/plain" ;;
+              *) CONTENT_TYPE="application/octet-stream" ;;
+            esac
+
+            UPLOAD_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Content-Type: $CONTENT_TYPE" \
+              --data-binary @"$file" \
+              "$UPLOAD_URL?name=$file")
+
+            if echo "$UPLOAD_RESPONSE" | jq -e '.browser_download_url' >/dev/null; then
+              echo "✓ Successfully uploaded $file"
+            else
+              echo "✗ Failed to upload $file:"
+              echo "$UPLOAD_RESPONSE" | jq .
+              exit 1
+            fi
+          fi
+        done
+
+        echo "::endgroup::"
+
+    - name: Release summary
+      run: |
+        echo "::notice title=Release $VERSION Created::Successfully created release with distribution tarball"
+
+        echo "## 🎉 Release $VERSION Complete!"
+        echo ""
+        echo "**Release Type:** $([ "$IS_PRERELEASE" = "true" ] && echo "Pre-release" || echo "Stable Release")"
+        echo "**Release URL:** https://github.com/${{ github.repository }}/releases/tag/$VERSION"
+        echo "**Git Commit:** ${{ github.sha }}"
+        echo ""
+        echo "### 📦 Available Downloads:"
+        for file in *.tar.*; do
+          if [ -f "$file" ]; then
+            SIZE=$(du -h "$file" | cut -f1)
+            echo "- **$file** ($SIZE)"
+          fi
+        done
+        echo ""
+        echo "### 🔍 Verification:"
+        echo "All files include SHA256 checksums for verification:"
+        echo '```bash'
+        for file in *.sha256; do
+          if [ -f "$file" ]; then
+            echo "sha256sum -c $file"
+          fi
+        done
+        echo '```'
+        echo ""
+        echo "### 🚀 Installation:"
+        echo '```bash'
+        echo "# Download and extract"
+        MAIN_TARBALL=$(ls *.tar.gz | head -1 2>/dev/null || ls *.tar.* | head -1)
+        if [ -n "$MAIN_TARBALL" ]; then
+          echo "wget https://github.com/${{ github.repository }}/releases/download/$VERSION/$MAIN_TARBALL"
+          echo "tar -xf $MAIN_TARBALL"
+          echo "cd ${MAIN_TARBALL%.tar.*}/"
+        fi
+        echo ""
+        echo "# Build and install"
+        echo "./configure --with-systemd"
+        echo "make"
+        echo "sudo make install"
+        echo '```'
