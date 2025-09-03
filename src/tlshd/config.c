@@ -49,6 +49,18 @@
 #include "tlshd.h"
 
 /**
+ * @page config Configuration
+ *
+ * @section man Man pages
+ * @subsection tlshd_conf_5 tlshd.conf.5
+ * @htmlinclude tlshd.conf.5.html
+ *
+ * @section config Configuration examples
+ * @subsection tlshd_conf /etc/tlshd/config
+ * @verbinclude config
+ */
+
+/**
  * @var tlshd_configuration
  * @brief In-memory parsed config file
  */
