@@ -1,8 +1,12 @@
-/*
- * Perform a QUIC server or client side handshake.
+/**
+ * @file quic.c
+ * @brief QUIC utility functions
  *
+ * @copyright
  * Copyright (c) 2024 Red Hat, Inc.
- *
+ */
+
+/*
  * ktls-utils is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
  * published by the Free Software Foundation; version 2.
@@ -422,11 +426,11 @@ err:
 }
 
 /**
- * tlshd_quic_conn_create - Create a context for QUIC handshake
- * @conn_p: pointer to accept the QUIC handshake context created
- * @parms: handshake parameters
+ * @brief Create a context for QUIC handshake
+ * @param[out]    conn_p  Pointer to accept the QUIC handshake context created
+ * @param[in]     parms   Handshake parameters
  *
- * Returns: %0 on success, or a negative error code
+ * @returns 0 on success, or a negative error code
  */
 int tlshd_quic_conn_create(struct tlshd_quic_conn **conn_p, struct tlshd_handshake_parms *parms)
 {
@@ -460,8 +464,8 @@ err:
 }
 
 /**
- * tlshd_quic_conn_destroy - Destroy a context for QUIC handshake
- * @conn: QUIC handshake context to destroy
+ * @brief Destroy a context for QUIC handshake
+ * @param[in]     conn  QUIC handshake context to destroy
  *
  */
 void tlshd_quic_conn_destroy(struct tlshd_quic_conn *conn)

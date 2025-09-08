@@ -1,9 +1,13 @@
-/*
- * Perform a TLSv1.3 server-side handshake.
+/**
+ * @file server.c
+ * @brief Perform a TLSv1.3 server-side handshake
  *
+ * @copyright
  * Copyright (c) 2023 Oracle and/or its affiliates.
  * Copyright (c) 2024 Red Hat, Inc.
- *
+ */
+
+/*
  * ktls-utils is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
  * published by the Free Software Foundation; version 2.
@@ -42,10 +46,32 @@
 #include "tlshd.h"
 #include "netlink.h"
 
+/**
+ * @var tlshd_server_privkey
+ * @brief Server peer's private key
+ */
 static gnutls_privkey_t tlshd_server_privkey;
+
+/**
+ * @var tlshd_certs_len
+ * @brief Count of server peer's certificates
+ */
 static unsigned int tlshd_server_certs_len = TLSHD_MAX_CERTS;
+
+/**
+ * @var tlshd_certs
+ * @brief Server peer's certificates
+ */
 static gnutls_pcert_st tlshd_server_certs[TLSHD_MAX_CERTS];
 
+/**
+ * @brief Retrieve server certificates to be used for ServerHello
+ * @param[in]     parms  Handshake parameters
+ *
+ * @retval true   Server certificates were found. Caller must release
+ *		  the certificates using tlshd_x509_server_put_certs.
+ * @retval false  No usable server certificates were found
+ */
 static bool tlshd_x509_server_get_certs(struct tlshd_handshake_parms *parms)
 {
 	if (parms->x509_cert != TLS_NO_CERT)
@@ -56,6 +82,9 @@ static bool tlshd_x509_server_get_certs(struct tlshd_handshake_parms *parms)
 					     &tlshd_server_certs_len);
 }
 
+/**
+ * @brief Release server certificates that were used for ServerHello
+ */
 static void tlshd_x509_server_put_certs(void)
 {
 	unsigned int i;
@@ -64,6 +93,14 @@ static void tlshd_x509_server_put_certs(void)
 		gnutls_pcert_deinit(&tlshd_server_certs[i]);
 }
 
+/**
+ * @brief Retrieve the private key to be used for ServerHello
+ * @param[in]     parms  Handshake parameters
+ *
+ * @retval true   Private key was found. Caller must release the
+ *		  private key using tlshd_x509_server_put_privkey.
+ * @retval false  No usable private key was found
+ */
 static bool tlshd_x509_server_get_privkey(struct tlshd_handshake_parms *parms)
 {
 	if (parms->x509_privkey != TLS_NO_PRIVKEY)
@@ -72,11 +109,19 @@ static bool tlshd_x509_server_get_privkey(struct tlshd_handshake_parms *parms)
 	return tlshd_config_get_server_privkey(&tlshd_server_privkey);
 }
 
+/**
+ * @brief Release the private key that was used for ServerHello
+ */
 static void tlshd_x509_server_put_privkey(void)
 {
 	gnutls_privkey_deinit(tlshd_server_privkey);
 }
 
+/**
+ * @brief Audit trust chain of incoming client certificate
+ * @param[in]     req_ca_rdn
+ * @param[in]     nreqs
+ */
 static void tlshd_x509_log_issuers(const gnutls_datum_t *req_ca_rdn, int nreqs)
 {
 	char issuer_dn[256];
@@ -99,7 +144,18 @@ static void tlshd_x509_log_issuers(const gnutls_datum_t *req_ca_rdn, int nreqs)
 }
 
 /**
- * tlshd_x509_retrieve_key_cb - Initialize client's x.509 identity
+ * @brief Initialize the server peer's x.509 identity
+ * @param[in]     session  session in the midst of a handshake
+ * @param[in]     req_ca_rdn
+ * @param[in]     nreqs
+ * @param[in]     pk_algos
+ * @param[in]     pk_algos_length
+ * @param[out]    pcert
+ * @param[out]    pcert_length
+ * @param[out]    privkey
+ *
+ * @retval 0   Success; output parameters are set accordingly
+ * @retval -1  Failure
  *
  * Callback function is of type gnutls_certificate_retrieve_function2
  *
@@ -107,10 +163,6 @@ static void tlshd_x509_log_issuers(const gnutls_datum_t *req_ca_rdn, int nreqs)
  * gnutls/doc/examples/ex-cert-select.c.
  *
  * Sketched-in and untested.
- *
- * Return values:
- *   %0: Success; output parameters are set accordingly
- *   %-1: Failure
  */
 static int
 tlshd_x509_retrieve_key_cb(gnutls_session_t session,
@@ -135,6 +187,13 @@ tlshd_x509_retrieve_key_cb(gnutls_session_t session,
 	return 0;
 }
 
+/**
+ * @brief Initialize server-side trust store
+ * @param[out]    cred  Trust store to initialize
+ *
+ * @returns a GnuTLS error code. Caller must release credentials
+ * using gnutls_certificate_free_credentials(3).
+ */
 static int tlshd_server_get_truststore(gnutls_certificate_credentials_t cred)
 {
 	char *pathname;
@@ -165,9 +224,9 @@ static int tlshd_server_get_truststore(gnutls_certificate_credentials_t cred)
 }
 
 /**
- * tlshd_server_x509_verify_function - Verify remote's x.509 certificate
- * @session: session in the midst of a handshake
- * @parms: handshake parameters
+ * @brief Verify remote's x.509 certificate
+ * @param[in]     session  Session in the midst of a handshake
+ * @param[in]     parms    Handshake parameters
  *
  * A return value of %GNUTLS_E_SUCCESS indicates that the TLS session
  * has been allowed to continue. tlshd either sets the peerid array if
@@ -237,6 +296,13 @@ certificate_error:
 	return GNUTLS_E_CERTIFICATE_ERROR;
 }
 
+/**
+ * @brief Verify a remote peer's x.509 certificate (TLSv1.3)
+ * @param[in]     session  session in the midst of a handshake
+ *
+ * @retval GNUTLS_E_SUCCESS            Certificate has been successfully verified
+ * @retval GNUTLS_E_CERTIFICATE_ERROR  Certificate verification failed
+ */
 static int tlshd_tls13_server_x509_verify_function(gnutls_session_t session)
 {
 	struct tlshd_handshake_parms *parms = gnutls_session_get_ptr(session);
@@ -244,6 +310,10 @@ static int tlshd_tls13_server_x509_verify_function(gnutls_session_t session)
 	return tlshd_server_x509_verify_function(session, parms);
 }
 
+/**
+ * @brief Process an x.509-based TLS handshake with a server certificate
+ * @param[in]     parms  Handshake parameters
+ */
 static void tlshd_tls13_server_x509_handshake(struct tlshd_handshake_parms *parms)
 {
 	gnutls_certificate_credentials_t xcred;
@@ -324,17 +394,16 @@ out_free_creds:
 }
 
 /**
- * tlshd_server_psk_cb - Validate remote's username
- * @session: session in the midst of a handshake
- * @username: remote's username
- * @key: PSK matching @username
+ * @brief Validate the remote peer's username
+ * @param[in]     session   Session in the midst of a handshake
+ * @param[in]     username  Remote peer's username
+ * @param[in]     key       PSK matching "username"
  *
- * Searches for a key with description @username in the session
- * keyring, and stores the PSK data in @key if found.
+ * Searches for a key with description "username" in the session
+ * keyring, and stores the PSK data in "key" if found.
  *
- * Return values:
- *   %0: Matching key has been stored in @key
- *   %-1: Error during lookup, @key is not updated
+ * @retval 0  Matching key has been stored in "key"
+ * @retval -1 Error during lookup, "key" is not updated
  */
 static int tlshd_server_psk_cb(gnutls_session_t session,
 			       const char *username, gnutls_datum_t *key)
@@ -364,6 +433,10 @@ static int tlshd_server_psk_cb(gnutls_session_t session,
 	return 0;
 }
 
+/**
+ * @brief Process an PSK-based TLS handshake (TLSv1.3)
+ * @param[in]     parms   Handshake parameters
+ */
 static void tlshd_tls13_server_psk_handshake(struct tlshd_handshake_parms *parms)
 {
 	gnutls_psk_server_credentials_t psk_cred;
@@ -409,9 +482,8 @@ out_free_creds:
 }
 
 /**
- * tlshd_tls13_serverhello_handshake - send a TLSv1.3 ServerHello
- * @parms: handshake parameters
- *
+ * @brief Send a TLSv1.3 ServerHello
+ * @param[in]     parms  Handshake parameters
  */
 void tlshd_tls13_serverhello_handshake(struct tlshd_handshake_parms *parms)
 {
@@ -429,6 +501,17 @@ void tlshd_tls13_serverhello_handshake(struct tlshd_handshake_parms *parms)
 }
 
 #ifdef HAVE_GNUTLS_QUIC
+/**
+ * @brief Verify the ALPNs presented by a remote peer
+ * @param[in]      session
+ * @param[in]      htype
+ * @param[in]      when
+ * @param[in]      incoming
+ * @param[in]      msg
+ *
+ * @retval 0   ALPN verification was successful
+ * @retval -1  ALPN verification failed
+ */
 static int tlshd_quic_server_alpn_verify(gnutls_session_t session, unsigned int htype,
 					 unsigned int when, unsigned int incoming,
 					 const gnutls_datum_t *msg)
@@ -453,6 +536,25 @@ static int tlshd_quic_server_alpn_verify(gnutls_session_t session, unsigned int 
 	return 0;
 }
 
+/**
+ * @brief Anti-reply protection
+ * @param[in]     dbf
+ * @param[in]     exp_time
+ * @param[in]     key
+ * @param[in]     data
+ *
+ * Currently, tlshd handles each handshake request in a new process
+ * rather than a thread. As a result, it cannot share the
+ * gnutls_anti_replay_t object across processes. This causes 0-RTT
+ * data to be automatically disabled, since
+ * _gnutls_anti_replay_check() fails validation in the absence of a
+ * shared anti-replay context.
+ *
+ * To properly support 0-RTT data, we need to enable sharing of the
+ * gnutls_anti_replay_t object across processes in some way.
+ *
+ * @retval 0  Not a replay
+ */
 static int tlshd_quic_server_anti_replay_db_add_func(void *dbf, time_t exp_time,
 						     const gnutls_datum_t *key,
 						     const gnutls_datum_t *data)
@@ -461,8 +563,19 @@ static int tlshd_quic_server_anti_replay_db_add_func(void *dbf, time_t exp_time,
 	return 0;
 }
 
+/**
+ * @var tlshd_quic_server_anti_replay
+ * @brief Shared anti-replay context
+ */
 static gnutls_anti_replay_t tlshd_quic_server_anti_replay;
 
+/**
+ * @brief Verify a remote peer's x.509 certificate (QUIC)
+ * @param[in]     session  session in the midst of a handshake
+ *
+ * @retval GNUTLS_E_SUCCESS            Certificate has been successfully verified
+ * @retval GNUTLS_E_CERTIFICATE_ERROR  Certificate verification failed
+ */
 static int tlshd_quic_server_x509_verify_function(gnutls_session_t session)
 {
 	struct tlshd_quic_conn *conn = gnutls_session_get_ptr(session);
@@ -470,6 +583,18 @@ static int tlshd_quic_server_x509_verify_function(gnutls_session_t session)
 	return tlshd_server_x509_verify_function(session, conn->parms);
 }
 
+/**
+ * @brief Validate the remote peer's username
+ * @param[in]     session   Session in the midst of a handshake
+ * @param[in]     username  Remote peer's username
+ * @param[in]     key       PSK matching "username"
+ *
+ * Searches for a key with description "username" in the session
+ * keyring, and stores the PSK data in "key" if found.
+ *
+ * @retval 0  Matching key has been stored in "key"
+ * @retval -1 Error during lookup, "key" is not updated
+ */
 static int tlshd_quic_server_psk_cb(gnutls_session_t session, const char *username,
 				    gnutls_datum_t *key)
 {
@@ -500,6 +625,13 @@ found:
 	return 0;
 }
 
+/**
+ * @brief Prepare a session for a QUIC server handshake using an x.509 cert
+ * @param[in]     conn
+ *
+ * @returns zero on success or a negative errno value if a failure
+ * occurred.
+ */
 static int tlshd_quic_server_set_x509_session(struct tlshd_quic_conn *conn)
 {
 	struct tlshd_handshake_parms *parms = conn->parms;
@@ -513,6 +645,7 @@ static int tlshd_quic_server_set_x509_session(struct tlshd_quic_conn *conn)
 		return ret;
 	}
 
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_certificate_allocate_credentials(&cred);
 	if (ret)
 		goto err;
@@ -524,6 +657,7 @@ static int tlshd_quic_server_set_x509_session(struct tlshd_quic_conn *conn)
 
 	gnutls_certificate_set_verify_function(cred, tlshd_quic_server_x509_verify_function);
 
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_init(&session, GNUTLS_SERVER | GNUTLS_NO_AUTO_SEND_TICKET |
 				    GNUTLS_ENABLE_EARLY_DATA | GNUTLS_NO_END_OF_EARLY_DATA);
 	if (ret)
@@ -538,6 +672,7 @@ static int tlshd_quic_server_set_x509_session(struct tlshd_quic_conn *conn)
 		gnutls_anti_replay_set_ptr(tlshd_quic_server_anti_replay, NULL);
 	}
 	gnutls_anti_replay_enable(session, tlshd_quic_server_anti_replay);
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_record_set_max_early_data_size(session, 0xffffffffu);
 	if (ret)
 		goto err_session;
@@ -545,11 +680,13 @@ static int tlshd_quic_server_set_x509_session(struct tlshd_quic_conn *conn)
 	gnutls_session_set_ptr(session, conn);
 	ticket_key.data = conn->ticket;
 	ticket_key.size = conn->ticket_len;
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_session_ticket_enable_server(session, &ticket_key);
 	if (ret)
 		goto err_session;
 	gnutls_handshake_set_hook_function(session, GNUTLS_HANDSHAKE_CLIENT_HELLO,
 					   GNUTLS_HOOK_POST, tlshd_quic_server_alpn_verify);
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_credentials_set(session, GNUTLS_CRD_CERTIFICATE, cred);
 	if (ret)
 		goto err_session;
@@ -569,23 +706,33 @@ err:
 	return ret;
 }
 
+/**
+ * @brief Prepare a session for a QUIC client handshake using a pre-shared key
+ * @param[in]     conn
+ *
+ * @returns zero on success or a negative errno value if a failure
+ * occurred.
+ */
 static int tlshd_quic_server_set_psk_session(struct tlshd_quic_conn *conn)
 {
 	gnutls_psk_server_credentials_t cred;
 	gnutls_session_t session;
 	int ret;
 
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_psk_allocate_server_credentials(&cred);
 	if (ret)
 		goto err;
 	gnutls_psk_set_server_credentials_function(cred, tlshd_quic_server_psk_cb);
 
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_init(&session, GNUTLS_SERVER | GNUTLS_NO_AUTO_SEND_TICKET);
 	if (ret)
 		goto err_cred;
 	gnutls_session_set_ptr(session, conn);
 	gnutls_handshake_set_hook_function(session, GNUTLS_HANDSHAKE_CLIENT_HELLO,
 					   GNUTLS_HOOK_POST, tlshd_quic_server_alpn_verify);
+	/* XXX: Does this API return an errno or a GNUTLS_E_ code ? */
 	ret = gnutls_credentials_set(session, GNUTLS_CRD_PSK, cred);
 	if (ret)
 		goto err_session;
@@ -603,9 +750,8 @@ err:
 }
 
 /**
- * tlshd_quic_serverhello_handshake - send a QUIC Server Initial
- * @parms: handshake parameters
- *
+ * @brief Send a QUIC Server Initial
+ * @param[in]     parms  Handshake parameters
  */
 void tlshd_quic_serverhello_handshake(struct tlshd_handshake_parms *parms)
 {
@@ -640,6 +786,10 @@ out:
 	tlshd_quic_conn_destroy(conn);
 }
 #else
+/**
+ * @brief Send a QUIC Server Initial
+ * @param[in]     parms  Handshake parameters
+ */
 void tlshd_quic_serverhello_handshake(struct tlshd_handshake_parms *parms)
 {
 	tlshd_log_debug("QUIC handshake is not enabled (%d)", parms->auth_mode);
